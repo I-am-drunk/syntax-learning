@@ -1,3 +1,4 @@
+import { channelStateKey } from './channelState.ts'
 export type ActivityCategory = 'course' | 'extension' | 'document' | 'visit'
 
 export interface DailyActivityRecord {
@@ -10,7 +11,7 @@ export interface DailyActivityRecord {
 
 export type ActivityHistoryMap = Record<string, DailyActivityRecord>
 
-const ACTIVITY_STORAGE_KEY = 'syntax.activity.v1'
+const ACTIVITY_STORAGE_KEY = channelStateKey('syntax.activity.v1')
 const ACTIVITY_EVENT = 'syntax:activity-changed'
 
 export function formatLocalDateKey(date: Date): string {

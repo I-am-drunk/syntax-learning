@@ -1,3 +1,4 @@
+import { channelStateKey } from './channelState.ts'
 import {
   isValidExpressionName,
   isValidShapeName,
@@ -7,10 +8,10 @@ import {
   type SemaTailName,
 } from '../mascot/bloub'
 
-const PREFS_KEY = 'syntax.prefs.v1'
-const LEGACY_PREFS_KEY = 'syntax.mpm2d.prefs.v1'
-const COOKIE_NAME = 'syntax_prefs'
-const LEGACY_COOKIE_NAME = 'syntax_mpm2d_prefs'
+const PREFS_KEY = channelStateKey('syntax.prefs.v1')
+const LEGACY_PREFS_KEY = channelStateKey('syntax.mpm2d.prefs.v1')
+const COOKIE_NAME = channelStateKey('syntax_prefs')
+const LEGACY_COOKIE_NAME = channelStateKey('syntax_mpm2d_prefs')
 
 export type LogoClickTarget = 'library' | 'home'
 export type NavBarStyle = 'underline' | 'pill'

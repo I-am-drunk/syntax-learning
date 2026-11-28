@@ -1,3 +1,5 @@
+import { channelStateKey, channelStatePrefix } from './channelState.ts'
+
 const IPV4_PRIVATE_10 = /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/
 const IPV4_PRIVATE_192 = /^192\.168\.\d{1,3}\.\d{1,3}$/
 const IPV4_CGNAT_100 = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/
@@ -26,85 +28,52 @@ export function isDevEnvironment(): boolean {
   return false
 }
 
-export function clearAllBrowserCookies() {
-  if (typeof document === 'undefined') return
-  const cookies = document.cookie.split(';')
-  const hostname = typeof window !== 'undefined' ? window.location.hostname : ''
-  const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:'
-  const hostParts = hostname.split('.')
-  const pathSet = new Set<string>(['/'])
-  if (typeof window !== 'undefined' && window.location.pathname) {
-    const segments = window.location.pathname.split('/').filter(Boolean)
-    let acc = ''
-    for (const seg of segments) {
-      acc += `/${seg}`
-      pathSet.add(acc)
-      pathSet.add(`${acc}/`)
-    }
-  }
-  const paths = [...pathSet]
-  const secureVariants = isHttps ? ['', '; Secure'] : ['']
+export const canResetDevState = Boolean(channelStatePrefix || import.meta.env?.DEV)
 
-  for (const raw of cookies) {
-    const eq = raw.indexOf('=')
-    const name = (eq >= 0 ? raw.slice(0, eq) : raw).trim()
-    if (!name) continue
-    for (const p of paths) {
-      for (const sec of secureVariants) {
-        document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; max-age=0; path=${p}; SameSite=Lax${sec}`
-        if (hostname) {
-          document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; max-age=0; path=${p}; domain=${hostname}; SameSite=Lax${sec}`
-          if (hostParts.length >= 2) {
-            const rootDomain = `.${hostParts.slice(-2).join('.')}`
-            document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; max-age=0; path=${p}; domain=${rootDomain}; SameSite=Lax${sec}`
-          }
-        }
-      }
-    }
+function removeDevStorage(storage: Storage) {
+  for (let index = storage.length - 1; index >= 0; index -= 1) {
+    const key = storage.key(index)
+    if (!key) continue
+    const owned = channelStatePrefix
+      ? key.startsWith(channelStatePrefix)
+      : key.startsWith('syntax.') || key === 'mpm2d-brilliant-theme-v1' || key === 'mpm2d-brilliant-sound-v1'
+    if (owned) storage.removeItem(key)
   }
 }
 
-export async function resetAllDevStateAndCookies() {
+export async function resetDevState() {
+  if (!canResetDevState || typeof window === 'undefined') return
+
   try {
-    localStorage.clear()
+    removeDevStorage(window.localStorage)
   } catch {
-    // ignore
+    // Storage can be unavailable in restricted browser contexts.
   }
   try {
-    sessionStorage.clear()
+    removeDevStorage(window.sessionStorage)
   } catch {
-    // ignore
+    // Storage can be unavailable in restricted browser contexts.
   }
-  clearAllBrowserCookies()
-  try {
-    if (typeof indexedDB !== 'undefined' && typeof indexedDB.databases === 'function') {
-      const dbs = await indexedDB.databases()
-      await Promise.all(
-        dbs
-          .map(d => d.name)
-          .filter((n): n is string => Boolean(n))
-          .map(
-            name =>
-              new Promise<void>(resolve => {
-                try {
-                  const req = indexedDB.deleteDatabase(name)
-                  req.onsuccess = () => resolve()
-                  req.onerror = () => resolve()
-                  req.onblocked = () => resolve()
-                } catch {
-                  resolve()
-                }
-              }),
-          ),
+  for (const name of ['syntax_prefs', 'syntax_mpm2d_prefs']) {
+    document.cookie = `${channelStateKey(name)}=; Max-Age=0; Path=/; SameSite=Lax`
+  }
+  if (typeof indexedDB !== 'undefined') {
+    try {
+      const databases = await indexedDB.databases()
+      const ownedNames = databases.map(({ name }) => name).filter((name): name is string =>
+        Boolean(name && (channelStatePrefix ? name.startsWith(channelStatePrefix) : name === 'syntax-extensions-v1')),
       )
+      await Promise.all(ownedNames.map(name => new Promise<void>(resolve => {
+        const request = indexedDB.deleteDatabase(name)
+        request.onsuccess = request.onerror = request.onblocked = () => resolve()
+      })))
+    } catch {
+      // A browser can deny access to IndexedDB.
     }
-  } catch {
-    // ignore
   }
-  if (typeof window !== 'undefined') {
-    if (window.location.hash) {
-      window.history.replaceState(null, '', window.location.pathname + window.location.search)
-    }
-    window.location.reload()
+
+  if (window.location.hash) {
+    window.history.replaceState(null, '', window.location.pathname + window.location.search)
   }
+  window.location.reload()
 }

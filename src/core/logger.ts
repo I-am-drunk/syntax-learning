@@ -1,3 +1,4 @@
+import { channelStateKey } from './channelState.ts'
 import { useSyncExternalStore } from 'react'
 
 export type LogLevel = 'info' | 'warn' | 'error'
@@ -15,7 +16,7 @@ export type ErrorSink = (entry: LogEntry, rawError?: unknown) => void
 export type AnalyticsSink = (eventName: string, props?: Record<string, unknown>) => void
 
 const MAX_ENTRIES = 300
-const SESSION_ERR_KEY = 'syntax.recentErrors.v1'
+const SESSION_ERR_KEY = channelStateKey('syntax.recentErrors.v1')
 
 let entries: LogEntry[] = []
 const listeners = new Set<() => void>()

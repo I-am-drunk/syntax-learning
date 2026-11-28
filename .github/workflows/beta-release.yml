@@ -1,0 +1,173 @@
+name: Release Syntax Beta
+
+on:
+  schedule:
+    - cron: '23 15 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: syntax-beta-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      github.ref == 'refs/heads/main' && vars.SYNTAX_BETA_ENABLED == 'true' &&
+      vars.SYNTAX_BETA_ORIGIN != '' && vars.SYNTAX_BETA_APPROVED_SHA != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      publish: ${{ steps.candidate.outputs.publish }}
+      sha: ${{ steps.candidate.outputs.sha }}
+      tag: ${{ steps.candidate.outputs.tag }}
+      previous: ${{ steps.candidate.outputs.previous }}
+      version: ${{ steps.candidate.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Check the two-day schedule and select a candidate
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BETA_ORIGIN: ${{ vars.SYNTAX_BETA_ORIGIN }}
+          INFRA_ORIGIN: ${{ vars.SYNTAX_INFRA_ORIGIN }}
+          APPROVED_SHA: ${{ vars.SYNTAX_BETA_APPROVED_SHA }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == schedule && $(( $(date -u +%s) / 86400 % 2 )) != 0 ]]; then
+            echo 'The next Beta slot is tomorrow.'
+            exit 0
+          fi
+          node -e 'const u = new URL(process.env.BETA_ORIGIN); if (u.protocol !== "https:" || u.origin !== process.env.BETA_ORIGIN || /(^|\.)github\.io$/.test(u.hostname)) throw Error("Beta requires its own HTTPS origin without a trailing slash")'
+          [[ "$BETA_ORIGIN" != "$INFRA_ORIGIN" ]]
+          if [[ ! "$APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]] || ! git merge-base --is-ancestor "$APPROVED_SHA" "$GITHUB_SHA"; then
+            echo 'Beta requires an explicitly approved full commit SHA on main.' >&2
+            exit 1
+          fi
+          previous=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.draft == false and .prerelease == false and (.tag_name | startswith("beta-v"))) | .tag_name' | sed -n '1p')
+          if [[ -n "$previous" ]]; then
+            previous_sha=$(git rev-parse "$previous^{commit}")
+            if [[ "$previous_sha" == "$APPROVED_SHA" ]]; then
+              echo 'This commit is already published on Beta.'
+              exit 0
+            fi
+            if ! git merge-base --is-ancestor "$previous_sha" "$APPROVED_SHA"; then
+              echo 'The approved Beta candidate must follow the last published Beta.' >&2
+              exit 1
+            fi
+          fi
+          git checkout --detach "$APPROVED_SHA"
+          version=$(node -p 'require("./package.json").version')
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          {
+            echo 'publish=true'
+            echo "sha=$APPROVED_SHA"
+            echo "tag=beta-v$version.$GITHUB_RUN_NUMBER"
+            echo "previous=$previous"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+      - if: steps.candidate.outputs.publish == 'true'
+        run: npm ci
+      - if: steps.candidate.outputs.publish == 'true'
+        run: npm run test:unit
+      - if: steps.candidate.outputs.publish == 'true'
+        run: npm run test:e2e
+      - if: steps.candidate.outputs.publish == 'true'
+        run: npm run build
+        env:
+          VITE_BASE: /
+          VITE_CHANNEL: beta
+          VITE_RELEASE_TAG: ${{ steps.candidate.outputs.tag }}
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_BETA_PUBLISHABLE_KEY }}
+      - if: steps.candidate.outputs.publish == 'true'
+        env:
+          APPROVED_SHA: ${{ steps.candidate.outputs.sha }}
+        run: printf '%s\n' "$APPROVED_SHA" > dist/release-commit.txt
+      - uses: actions/upload-artifact@v4
+        if: steps.candidate.outputs.publish == 'true'
+        with:
+          name: syntax-beta
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment:
+      name: syntax-beta
+      url: ${{ vars.SYNTAX_BETA_ORIGIN }}/
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: syntax-beta
+          path: incoming
+      - name: Publish the Beta build to Cloudflare
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_PAGES_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy incoming --project-name=syntax-beta --branch=main --commit-hash=${{ needs.build.outputs.sha }}
+      - name: Verify the live Beta commit
+        env:
+          BETA_ORIGIN: ${{ vars.SYNTAX_BETA_ORIGIN }}
+          APPROVED_SHA: ${{ needs.build.outputs.sha }}
+        run: |
+          for attempt in {1..24}; do
+            actual=$(curl --silent --fail --max-time 10 "$BETA_ORIGIN/release-commit.txt?run=$GITHUB_RUN_ID" || true)
+            if [[ "$actual" == "$APPROVED_SHA" ]]; then exit 0; fi
+            sleep 10
+          done
+          echo 'The Beta site did not serve the expected commit.' >&2
+          exit 1
+
+  release:
+    needs: [build, deploy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+      models: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: syntax-beta
+          path: incoming
+      - name: Publish a regular Beta release in Syntax
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BETA_ORIGIN: ${{ vars.SYNTAX_BETA_ORIGIN }}
+          TAG: ${{ needs.build.outputs.tag }}
+          PREVIOUS_TAG: ${{ needs.build.outputs.previous }}
+          VERSION: ${{ needs.build.outputs.version }}
+          APPROVED_SHA: ${{ needs.build.outputs.sha }}
+        run: |
+          printf '[Open Syntax Beta](%s/)\n\n' "$BETA_ORIGIN" > notes.md
+          if node scripts/generate-release-notes.mjs --repository "$GITHUB_REPOSITORY" \
+            --tag "$TAG" --ref "$APPROVED_SHA" --previous-tag "$PREVIOUS_TAG" \
+            --version "$VERSION" --output generated.md; then
+            cat generated.md >> notes.md
+          else
+            printf 'Built from commit `%s`.\n' "$APPROVED_SHA" >> notes.md
+          fi
+          tar -czf syntax-beta.tar.gz -C incoming .
+          gh release create "$TAG" syntax-beta.tar.gz --target "$APPROVED_SHA" \
+            --title "Syntax Beta $VERSION · $GITHUB_RUN_NUMBER" --notes-file notes.md --latest=false

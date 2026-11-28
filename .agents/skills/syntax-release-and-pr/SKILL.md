@@ -7,7 +7,7 @@ description: Author T3 Code-style pull requests, conventional commits, and Night
 
 Syntax uses a single-source-of-truth release pipeline in `syntax-platform/syntax` modeled after `pingdotgg/t3code`:
 
-- **Syntax Stable (`https://syntax-platform.github.io/syntax/`)**: Published from `vX.Y.Z` releases in `syntax-platform/syntax`. Manual Stable releases automatically promote the exact commit SHA of the latest published Nightly so Stable never ships an untested build.
+- **Syntax Stable (`https://syntax-platform.github.io/syntax/`)**: Published from `vX.Y.Z` releases in `syntax-platform/syntax`. Dispatch Stable from `main` with an exact commit SHA that matches the maintainer's `SYNTAX_STABLE_APPROVED_SHA` repository variable.
 - **Syntax Dev (`https://syntax-platform.github.io/syntax-dev/`)**: Automated Nightly pre-releases (`vX.Y.Z-nightly.YYYYMMDD.<run>`) cut from `main` and cross-deployed to `syntax-platform/syntax-dev`'s `gh-pages` branch via a least-privilege deploy key (`SYNTAX_DEV_DEPLOY_KEY`).
 - **Preview (`channel=preview`)**: Manual dry-run build from any branch; stays a draft release and never touches live sites.
 
@@ -39,9 +39,9 @@ Follow these rules on every PR:
   ```bash
   gh workflow run release.yml --repo syntax-platform/syntax -f channel=nightly
   ```
-- **Promote the latest verified Nightly to Syntax Stable:**
+- **Publish an explicitly approved commit to Syntax Stable:**
   ```bash
-  gh workflow run release.yml --repo syntax-platform/syntax -f channel=stable
+  gh workflow run release.yml --repo syntax-platform/syntax -f channel=stable -f commit=<approved-sha>
   ```
   (Optional: pass `-f version=0.3.0` to override the semver tag.)
 - **Preview release notes locally before cutting a release:**

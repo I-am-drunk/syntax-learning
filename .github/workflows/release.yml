@@ -1,11 +1,6 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
-      - "!v*-nightly.*"
-      - "!v*-preview.*"
   schedule:
     # Avoid minute zero, when GitHub scheduled runners are busiest.
     - cron: "8 */6 * * *"
@@ -21,7 +16,11 @@ on:
           - stable
           - preview
       version:
-        description: "Optional stable version override (for example 0.3.0). Defaults to latest nightly's base version."
+        description: "Optional Stable version override (for example 0.3.0)."
+        required: false
+        type: string
+      commit:
+        description: "Stable only. Full commit SHA explicitly approved for Stable."
         required: false
         type: string
 
@@ -67,7 +66,8 @@ jobs:
         env:
           DISPATCH_CHANNEL: ${{ github.event.inputs.channel }}
           DISPATCH_VERSION: ${{ github.event.inputs.version }}
-          RUN_STARTED_AT: ${{ github.run_started_at }}
+          DISPATCH_COMMIT: ${{ inputs.commit }}
+          STABLE_APPROVED_SHA: ${{ vars.SYNTAX_STABLE_APPROVED_SHA }}
           RUN_NUMBER: ${{ github.run_number }}
         with:
           script: |
@@ -84,7 +84,7 @@ jobs:
               ? 'nightly'
               : context.eventName === 'workflow_dispatch'
                 ? (process.env.DISPATCH_CHANNEL || 'nightly')
-                : 'stable';
+                : '';
 
             const releases = await mod.listPublishedReleases({ github, owner, repo });
             const latestStable = mod.findLatestRelease(releases, tag => mod.isStableTag(tag));
@@ -114,7 +114,7 @@ jobs:
                 latestStableTag: latestStable?.tagName,
                 pkgVersion: pkg.version,
               });
-              const dateStr = new Date(process.env.RUN_STARTED_AT || Date.now())
+              const dateStr = new Date()
                 .toISOString()
                 .slice(0, 10)
                 .replace(/-/g, '');
@@ -133,7 +133,7 @@ jobs:
                 latestStableTag: latestStable?.tagName,
                 pkgVersion: pkg.version,
               });
-              const dateStr = new Date(process.env.RUN_STARTED_AT || Date.now())
+              const dateStr = new Date()
                 .toISOString()
                 .slice(0, 10)
                 .replace(/-/g, '');
@@ -147,41 +147,36 @@ jobs:
               releaseName = `Syntax Preview ${version} (${targetSha.slice(0, 8)})`;
               isPrerelease = 'true';
               makeLatest = 'false';
-            } else {
-              // Stable channel: tag push OR manual promotion of the latest published nightly
-              let nightlyVersion = null;
-              if (context.eventName === 'workflow_dispatch') {
-                if (context.ref !== `refs/heads/${defaultBranch}`) {
-                  throw new Error(`Stable releases must be dispatched from ${defaultBranch}.`);
-                }
-                const promoted = await mod.resolveLatestNightlyCommit({ github, owner, repo, releases, core });
-                if (promoted) {
-                  targetSha = promoted.sha;
-                  nightlyVersion = promoted.version;
-                  core.notice(`Promoting latest nightly ${promoted.tag} (${targetSha.slice(0, 8)}) to Stable.`);
-                }
-                await mod.assertCommitOnDefaultBranch({ github, owner, repo, defaultBranch, sha: targetSha });
-                version = (process.env.DISPATCH_VERSION || nightlyVersion || mod.resolveNextBaseVersion({
-                  latestStableTag: latestStable?.tagName,
-                  pkgVersion: pkg.version,
-                })).replace(/^v/, '');
-              } else {
-                version = context.ref.replace(/^refs\/tags\/v?/, '');
-                await mod.assertCommitOnDefaultBranch({ github, owner, repo, defaultBranch, sha: targetSha });
-              }
+            } else if (channel === 'stable') {
+              targetSha = mod.selectStableCommit({
+                eventName: context.eventName,
+                eventRef: context.ref,
+                defaultBranch,
+                requestedSha: process.env.DISPATCH_COMMIT,
+                approvedSha: process.env.STABLE_APPROVED_SHA,
+              });
+              await mod.assertCommitOnDefaultBranch({ github, owner, repo, defaultBranch, sha: targetSha });
+
+              version = (process.env.DISPATCH_VERSION || mod.resolveNextBaseVersion({
+                latestStableTag: latestStable?.tagName,
+                pkgVersion: pkg.version,
+              })).replace(/^v/, '');
 
               if (!/^\d+\.\d+\.\d+$/.test(version)) {
                 throw new Error(`Invalid stable semver version: ${version}`);
               }
               tag = `v${version}`;
+              await mod.assertStableTagTarget({ github, owner, repo, tag, sha: targetSha });
               releaseName = `Syntax v${version}`;
               isPrerelease = 'false';
               makeLatest = 'true';
+            } else {
+              throw new Error(`Unsupported release channel: ${channel}`);
             }
 
             const previousTag = mod.resolvePreviousTag({ releases, channel, currentTag: tag });
             const viteBase = channel === 'stable' ? '/syntax/' : '/syntax-dev/';
-            const viteChannel = channel === 'stable' ? 'stable' : 'dev';
+            const viteChannel = channel === 'nightly' ? 'dev' : channel;
 
             core.setOutput('should_release', 'true');
             core.setOutput('channel', channel);
@@ -226,8 +221,11 @@ jobs:
         run: npm run build
 
       - name: Prepare static site archive
+        env:
+          DEPLOY_COMMIT: ${{ needs.resolve.outputs.ref }}
         run: |
           touch dist/.nojekyll
+          printf '%s\n' "$DEPLOY_COMMIT" > dist/release-commit.txt
           tar -czf "site-${{ needs.resolve.outputs.channel }}.tar.gz" -C dist .
 
       - name: Upload release bundle artifact
@@ -315,6 +313,19 @@ jobs:
           MAKE_LATEST: ${{ needs.resolve.outputs.make_latest }}
         run: |
           set -euo pipefail
+          if [[ "$CHANNEL" == stable ]]; then
+            refs=$(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+            if [[ -z "$refs" ]]; then
+              gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+                -f "ref=refs/tags/$TAG" -f "sha=$TARGET_REF" --silent
+            fi
+            refs=$(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+            tagged_sha=$(awk '/\^\{\}$/ { peeled = $1 } !/\^\{\}$/ { direct = $1 } END { print (peeled ? peeled : direct) }' <<< "$refs")
+            if [[ "$tagged_sha" != "$TARGET_REF" ]]; then
+              echo "Stable tag $TAG does not point to the approved commit." >&2
+              exit 1
+            fi
+          fi
           EXTRA_ARGS=()
           if [[ "$IS_PRERELEASE" == "true" ]]; then
             EXTRA_ARGS+=(--prerelease)
@@ -337,6 +348,9 @@ jobs:
             gh release edit "$TAG" --title "$RELEASE_NAME" "${EXTRA_ARGS[@]}"
             gh release upload "$TAG" release-assets/*.tar.gz --clobber
           else
+            if [[ "$CHANNEL" == stable ]]; then
+              EXTRA_ARGS+=(--verify-tag)
+            fi
             gh release create "$TAG" release-assets/*.tar.gz \
               --target "$TARGET_REF" \
               --title "$RELEASE_NAME" \
@@ -388,7 +402,7 @@ jobs:
           name: release-notes
           path: release-notes
 
-      - name: Cross-repo deploy & tag pre-release on syntax-platform/syntax-dev
+      - name: Deploy and tag the Nightly in syntax-dev
         env:
           DEPLOY_KEY: ${{ secrets.SYNTAX_DEV_DEPLOY_KEY }}
           TAG: ${{ needs.resolve.outputs.tag }}

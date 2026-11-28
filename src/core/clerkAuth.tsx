@@ -11,6 +11,7 @@ import {
 import { ClerkProvider, useAuth, useClerk, useSessionList, useUser } from '@clerk/react'
 import { dark } from '@clerk/themes'
 import { isClerkConfigured, sanitizeHandle, useAccountStore } from './account'
+import { channelStatePrefix } from './channelState'
 import {
   CLOUD_SYNC_DIRTY_EVENT,
   collectLocalCloudSnapshot,
@@ -208,7 +209,7 @@ function ClerkAccountBridge({ children }: { children: ReactNode }) {
   // 2. Push helper (deduplicated via content fingerprint)
   const runCloudPush = useCallback(
     async (force = false) => {
-      if (!user) return
+      if (!user || channelStatePrefix) return
       const snapshot = collectLocalCloudSnapshot()
       const fp = fingerprintCloudPayload(snapshot)
       if (!force && fp === lastPushedFingerprintRef.current) return
@@ -234,6 +235,10 @@ function ClerkAccountBridge({ children }: { children: ReactNode }) {
   // 3. Initial hydration & merge when Clerk user signs in
   useEffect(() => {
     if (!isLoaded || !user) return
+    if (channelStatePrefix) {
+      setSyncState({ status: 'local-only', lastSyncedAt: null, lastError: null })
+      return
+    }
     if (hydratedUserIdRef.current === user.id) return
     hydratedUserIdRef.current = user.id
 
@@ -259,7 +264,7 @@ function ClerkAccountBridge({ children }: { children: ReactNode }) {
 
   // 4. Debounced live auto-sync whenever preferences or theme change
   useEffect(() => {
-    if (!user) return
+    if (!user || channelStatePrefix) return
     const scheduleSync = () => {
       window.clearTimeout(syncTimerRef.current)
       syncTimerRef.current = window.setTimeout(() => {

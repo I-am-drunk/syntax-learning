@@ -1,0 +1,82 @@
+name: Deploy Dev on demand
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Full commit SHA on main. Leave blank to use main HEAD.
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-nightly
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: commit
+        name: Select a merged main commit
+        env:
+          REQUESTED_COMMIT: ${{ inputs.commit }}
+        run: |
+          target=${REQUESTED_COMMIT:-$GITHUB_SHA}
+          [[ "$target" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$target" "$GITHUB_SHA"
+          git checkout --detach "$target"
+          echo "sha=$target" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:unit
+      - run: npm run build
+        env:
+          VITE_BASE: /syntax-dev/
+          VITE_CHANNEL: dev
+          VITE_RELEASE_TAG: dev-${{ steps.commit.outputs.sha }}
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_PUBLISHABLE_KEY }}
+      - name: Record the Dev build commit
+        env:
+          DEPLOY_COMMIT: ${{ steps.commit.outputs.sha }}
+        run: printf '%s\n' "$DEPLOY_COMMIT" > dist/release-commit.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: syntax-dev
+          path: dist/
+          retention-days: 2
+          if-no-files-found: error
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: syntax-dev
+      url: https://syntax-platform.github.io/syntax-dev/
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: syntax-dev
+          path: incoming
+      - name: Publish merged build to Syntax Dev
+        env:
+          DEPLOY_KEY: ${{ secrets.SYNTAX_DEV_DEPLOY_KEY }}
+          DEPLOY_COMMIT: ${{ needs.build.outputs.sha }}
+        run: bash .github/scripts/deploy-static-site.sh incoming

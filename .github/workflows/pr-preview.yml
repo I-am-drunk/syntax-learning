@@ -1,0 +1,120 @@
+name: Infra PR preview
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, closed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: syntax-infra-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: >-
+      vars.SYNTAX_INFRA_ORIGIN != '' && github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+        env:
+          VITE_BASE: /
+          VITE_CHANNEL: preview
+          VITE_CLERK_PUBLISHABLE_KEY: ''
+      - run: printf '%s\n' "$HEAD_SHA" > dist/preview-commit.txt
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: infra-preview
+          path: dist/
+          retention-days: 2
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: >-
+      always() && vars.SYNTAX_INFRA_ORIGIN != '' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (needs.build.result == 'success' || github.event.action == 'closed')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      pull-requests: write
+    environment: syntax-infra
+    env:
+      INFRA_ORIGIN: ${{ vars.SYNTAX_INFRA_ORIGIN }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      CLOSED: ${{ github.event.action == 'closed' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        if: github.event.action != 'closed'
+        with:
+          name: infra-preview
+          path: incoming
+      - name: Check the static preview bundle
+        if: github.event.action != 'closed'
+        run: |
+          test -f incoming/index.html
+          test "$(cat incoming/preview-commit.txt)" = "$HEAD_SHA"
+          test -z "$(find incoming ! -type f ! -type d -print -quit)"
+          test ! -e incoming/_worker.js
+      - name: Publish this PR's Cloudflare preview
+        if: github.event.action != 'closed'
+        id: deployment
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_PAGES_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy incoming --project-name=syntax-infra --branch=pr-${{ github.event.pull_request.number }} --commit-hash=${{ github.event.pull_request.head.sha }}
+      - name: Verify the deployed commit
+        if: github.event.action != 'closed'
+        env:
+          PREVIEW_URL: ${{ steps.deployment.outputs.pages-deployment-alias-url }}
+        run: |
+          [[ "$PREVIEW_URL" == "https://pr-$PR_NUMBER.${INFRA_ORIGIN#https://}" || "$PREVIEW_URL" == "https://pr-$PR_NUMBER.${INFRA_ORIGIN#https://}/" ]]
+          for attempt in {1..24}; do
+            actual=$(curl --silent --fail --max-time 10 "${PREVIEW_URL%/}/preview-commit.txt?run=$GITHUB_RUN_ID" || true)
+            if [[ "$actual" == "$HEAD_SHA" ]]; then exit 0; fi
+            sleep 10
+          done
+          echo 'The Infra site did not serve the expected commit.' >&2
+          exit 1
+      - name: Update the preview link on the PR
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_URL: ${{ steps.deployment.outputs.pages-deployment-alias-url }}
+          BUILD_URL: ${{ steps.deployment.outputs.deployment-url }}
+        with:
+          script: |
+            const marker = '<!-- syntax-infra-preview -->';
+            const number = Number(process.env.PR_NUMBER);
+            const key = { ...context.repo, issue_number: number };
+            const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: number });
+            const closing = process.env.CLOSED === 'true';
+            if (closing ? pr.state !== 'closed' : pr.state !== 'open' || pr.head.sha !== process.env.HEAD_SHA) return;
+            const comments = await github.paginate(github.rest.issues.listComments, key);
+            const previous = comments.find(comment => comment.user?.login === 'github-actions[bot]' && comment.body?.startsWith(marker));
+            const body = closing
+              ? `${marker}\n### Syntax preview\n\nThe PR is closed. This preview no longer receives updates.`
+              : `${marker}\n### Syntax preview\n\n[Open the PR preview](${process.env.PREVIEW_URL}) · [Open this exact build](${process.env.BUILD_URL})\n\nCommit \`${process.env.HEAD_SHA.slice(0, 7)}\``;
+            if (previous) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: previous.id, body });
+            } else if (!closing) {
+              await github.rest.issues.createComment({ ...key, body });
+            }

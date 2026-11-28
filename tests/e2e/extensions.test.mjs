@@ -24,8 +24,8 @@ async function createCleanPage() {
   return { context, page, pageErrors }
 }
 
-async function installViaUi(page, url) {
-  await page.goto(`${harness.appOrigin}/#/extensions`)
+async function installViaUi(page, url, base = '/') {
+  await page.goto(`${harness.appOrigin}${base}#/extensions`)
   await page.waitForSelector('input[aria-label="Extension manifest URL"]')
   await page.fill('input[aria-label="Extension manifest URL"]', url)
   await page.click('button[type="submit"]:has-text("Install")')
@@ -36,6 +36,62 @@ async function installViaUi(page, url) {
 describe('Syntax Extensions v1 end-to-end acceptance suite (real Chromium)', () => {
   before(async () => {
     harness = await startE2EHarness()
+  })
+
+  it('keeps Stable browser data when Dev installs and resets on the same origin', async () => {
+    const { context, page } = await createCleanPage()
+    try {
+      await installViaUi(page, harness.extUrl('demo-course/extension.json'), '/syntax/')
+      await page.waitForFunction(() => (localStorage.getItem('syntax.extensions.v1') || '').includes('tj.demo-course'))
+      const stableInstall = await page.evaluate(() => localStorage.getItem('syntax.extensions.v1'))
+      await page.evaluate(async () => {
+        localStorage.setItem('syntax-dev-syntax.prefs.v1', JSON.stringify({ onboarded: true }))
+        localStorage.setItem('syntax.activity.v1', '{"stable":true}')
+        sessionStorage.setItem('syntax.recentErrors.v1', '[]')
+        document.cookie = 'outside-syntax=keep; Path=/'
+        for (const name of ['syntax-extensions-v1', 'syntax-dev-syntax-extensions-v1']) {
+          await new Promise((resolve, reject) => {
+            const request = indexedDB.open(name)
+            request.onsuccess = () => {
+              request.result.close()
+              resolve()
+            }
+            request.onerror = () => reject(request.error)
+          })
+        }
+      })
+
+      await installViaUi(page, harness.extUrl('view-only/extension.json'), '/syntax-dev/')
+      await page.waitForFunction(() =>
+        (localStorage.getItem('syntax-dev-syntax.extensions.v1') || '').includes('tj.view-only'),
+      )
+      assert.equal(await page.evaluate(() => localStorage.getItem('syntax.extensions.v1')), stableInstall)
+
+      await Promise.all([
+        page.waitForEvent('load'),
+        page.evaluate(async () => {
+          const { resetDevState } = await import('/src/core/devEnv.ts')
+          void resetDevState()
+        }),
+      ])
+      const state = await page.evaluate(async () => ({
+        stableActivity: localStorage.getItem('syntax.activity.v1'),
+        stableErrors: sessionStorage.getItem('syntax.recentErrors.v1'),
+        stableInstall: localStorage.getItem('syntax.extensions.v1'),
+        devExtensions: localStorage.getItem('syntax-dev-syntax.extensions.v1'),
+        unrelatedCookie: document.cookie.includes('outside-syntax=keep'),
+        databases: (await indexedDB.databases()).map(db => db.name),
+      }))
+      assert.equal(state.stableActivity, '{"stable":true}')
+      assert.equal(state.stableErrors, '[]')
+      assert.equal(state.stableInstall, stableInstall)
+      assert.equal(state.devExtensions, null)
+      assert.equal(state.unrelatedCookie, true)
+      assert.ok(state.databases.includes('syntax-extensions-v1'))
+      assert.ok(!state.databases.includes('syntax-dev-syntax-extensions-v1'))
+    } finally {
+      await context.close()
+    }
   })
 
   after(async () => {

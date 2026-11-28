@@ -138,22 +138,29 @@ export async function shouldReleaseNightly({
   return true
 }
 
-export async function resolveLatestNightlyCommit({ github, owner, repo, releases, core }) {
-  const lastNightly = findLatestRelease(releases, tag => isNightlyTag(tag))
-  if (!lastNightly) {
-    core.notice('No published nightly found yet; stable release will use current default branch HEAD.')
-    return null
+export function selectStableCommit({ eventName, eventRef, defaultBranch, requestedSha, approvedSha }) {
+  if (eventName !== 'workflow_dispatch' || eventRef !== `refs/heads/${defaultBranch}`) {
+    throw new Error(`Stable releases must be dispatched from ${defaultBranch}.`)
   }
-  const { data: commit } = await github.rest.repos.getCommit({
-    owner,
-    repo,
-    ref: lastNightly.tagName,
-  })
-  const versionMatch = /^v(\d+\.\d+\.\d+)-(?:nightly|alpha)\./.exec(lastNightly.tagName)
-  return {
-    tag: lastNightly.tagName,
-    sha: commit.sha,
-    version: versionMatch ? versionMatch[1] : null,
+  if (!/^[0-9a-f]{40}$/.test(approvedSha)) {
+    throw new Error('Stable releases require a full commit SHA in SYNTAX_STABLE_APPROVED_SHA.')
+  }
+  if (requestedSha !== approvedSha) {
+    throw new Error('The commit input must match SYNTAX_STABLE_APPROVED_SHA.')
+  }
+  return approvedSha
+}
+
+export async function assertStableTagTarget({ github, owner, repo, tag, sha }) {
+  try {
+    await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` })
+  } catch (error) {
+    if (error.status === 404) return
+    throw error
+  }
+  const { data: commit } = await github.rest.repos.getCommit({ owner, repo, ref: `refs/tags/${tag}` })
+  if (commit.sha !== sha) {
+    throw new Error(`Stable tag ${tag} already points to ${commit.sha}, expected ${sha}.`)
   }
 }
 

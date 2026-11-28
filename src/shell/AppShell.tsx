@@ -1,3 +1,4 @@
+import { channelStateKey } from '../core/channelState.ts'
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 import { Route, Router, Switch, useLocation } from 'wouter'
 import { useHashLocation } from 'wouter/use-hash-location'
@@ -41,10 +42,10 @@ const DevToolsSuite = lazy(() =>
   import('../core/devTools').then(m => ({ default: m.DevToolsSuite })),
 )
 
-const THEME_KEY = 'syntax.theme.v1'
-const LEGACY_THEME_KEY = 'mpm2d-brilliant-theme-v1'
-const SOUND_KEY = 'syntax.sound.v1'
-const LEGACY_SOUND_KEY = 'mpm2d-brilliant-sound-v1'
+const THEME_KEY = channelStateKey('syntax.theme.v1')
+const LEGACY_THEME_KEY = channelStateKey('mpm2d-brilliant-theme-v1')
+const SOUND_KEY = channelStateKey('syntax.sound.v1')
+const LEGACY_SOUND_KEY = channelStateKey('mpm2d-brilliant-sound-v1')
 
 function loadTheme(): 'light' | 'dark' {
   try {

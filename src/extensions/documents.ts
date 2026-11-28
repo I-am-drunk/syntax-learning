@@ -1,7 +1,8 @@
+import { channelStateKey } from '../core/channelState.ts'
 import { z } from 'zod'
 import { ExtensionError } from './plugos/protocol.ts'
 
-const DB_NAME = 'syntax-extensions-v1'
+const DB_NAME = channelStateKey('syntax-extensions-v1')
 const DB_VERSION = 1
 const STORE_NAME = 'documents'
 
@@ -568,7 +569,7 @@ export function exportDocumentFilename(doc: Pick<DocumentEnvelope, 'id' | 'title
   return `${slug || doc.id}.syntaxdoc.json`
 }
 
-const DOCUMENTS_CHANNEL_NAME = 'syntax-documents-v1'
+const DOCUMENTS_CHANNEL_NAME = channelStateKey('syntax-documents-v1')
 let docsChannel: BroadcastChannel | null = null
 
 function getDocumentsChannel(): BroadcastChannel | null {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Agentation } from 'agentation'
-import { resetAllDevStateAndCookies } from './devEnv'
+import { canResetDevState, resetDevState } from './devEnv'
 import { clearLogs, getLogs } from './logger'
 
 type ErudaEl = {
@@ -133,7 +133,7 @@ export function DevToolsSuite() {
               <div style="display:flex;gap:8px;flex-wrap:wrap;">
                 <button type="button" data-sx-dev="refresh" style="padding:6px 11px;border-radius:8px;border:1px solid rgba(127,127,127,.35);background:transparent;color:inherit;font-size:12px;font-weight:600;cursor:pointer;">Refresh</button>
                 <button type="button" data-sx-dev="clear-logs" style="padding:6px 11px;border-radius:8px;border:1px solid rgba(127,127,127,.35);background:transparent;color:inherit;font-size:12px;font-weight:600;cursor:pointer;">Clear logs</button>
-                <button type="button" data-sx-dev="reset" style="padding:6px 11px;border-radius:8px;border:1px solid #ef4444;background:rgba(239,68,68,.12);color:#ef4444;font-size:12px;font-weight:700;cursor:pointer;">Reset state &amp; cookies</button>
+                ${canResetDevState ? '<button type="button" data-sx-dev="reset" style="padding:6px 11px;border-radius:8px;border:1px solid #ef4444;background:rgba(239,68,68,.12);color:#ef4444;font-size:12px;font-weight:700;cursor:pointer;">Reset Dev state</button>' : ''}
               </div>
             </div>
             <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;opacity:.7;margin-bottom:8px;">Recent Runtime Logs (${logs.length})</div>
@@ -149,7 +149,7 @@ export function DevToolsSuite() {
             syntaxPanelEl = $el
             renderSyntaxPanel()
             $el.on('click', '[data-sx-dev="reset"]', () => {
-              void resetAllDevStateAndCookies()
+              void resetDevState()
             })
             $el.on('click', '[data-sx-dev="refresh"]', () => {
               renderSyntaxPanel()

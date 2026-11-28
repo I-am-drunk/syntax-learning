@@ -1,10 +1,11 @@
+import { channelStateKey } from '../core/channelState.ts'
 import { create } from 'zustand'
 import { z } from 'zod'
 import { extensionManifestSchema, type ExtensionManifest } from './manifest.ts'
 
-const RECORDS_STORAGE_KEY = 'syntax.extensions.v1'
-const SETTINGS_STORAGE_KEY = 'syntax.extensions.settings.v1'
-const BOOT_SENTINEL_KEY = 'syntax.extensions.boot-attempts.v1'
+const RECORDS_STORAGE_KEY = channelStateKey('syntax.extensions.v1')
+const SETTINGS_STORAGE_KEY = channelStateKey('syntax.extensions.settings.v1')
+const BOOT_SENTINEL_KEY = channelStateKey('syntax.extensions.boot-attempts.v1')
 const BOOT_CRASH_THRESHOLD = 3
 
 /**

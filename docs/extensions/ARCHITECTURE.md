@@ -1,5 +1,7 @@
 # Syntax Extensions v1 Architecture
 
+For the next runtime and its release milestones, see the [Syntax extensions master plan](MASTER-PLAN.md).
+
 General-purpose, browser-native extension architecture for Syntax built on SilverBullet's MIT-licensed PlugOS worker isolation model.
 
 ## Design Principles
